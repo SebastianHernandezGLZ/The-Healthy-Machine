@@ -1,0 +1,11 @@
+# Convención para hacer que una carpeta vacía exista en el repositorio.
+
+data/
+├── raw/
+│   └── ai4i2020.csv
+├── interim/
+│   └── .gitkeep
+├── processed/
+│   └── .gitkeep
+└── external/
+    └── .gitkeep
