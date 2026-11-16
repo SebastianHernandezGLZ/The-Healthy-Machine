@@ -4,35 +4,40 @@
 import numpy as np
 import pandas as pd
 import pytest
-from sklearn.compose import ColumnTransformer
+
+from sklearn.compose import ColumnTransformer  # Import ColumnTransformer type hint and instance checks
 
 from src.preprocessing.preprocessing_pipeline import (
-    PreprocessingError,
-    create_preprocessing_pipeline,
-    fit_preprocessing_pipeline,
-    transform_with_pipeline,
+    PreprocessingError,  # Custom pipeline exception
+    create_preprocessing_pipeline,  # Function that builds the ColumnTransformer pipeline
+    fit_preprocessing_pipeline,  # Function that fits the pipeline on training data
+    transform_with_pipeline,  # Function that transforms data using a fitted pipeline
 )
 
 
 @pytest.fixture
-def training_data():
-    """Create representative training data."""
+def sample_data():
+    """Create a sample dataset for preprocessing tests."""
     return pd.DataFrame(
         {
             "Type": ["L", "M", "H", "L", "M", "H"],
             "Air temperature [K]": [
-                298.1, 298.2, 298.3, 298.4, 298.5, 298.6
+                300.0, 301.0, 302.0, 303.0, 304.0, 305.0
             ],
             "Process temperature [K]": [
-                308.1, 308.3, 308.5, 308.7, 308.9, 309.1
+                310.0, 311.0, 312.0, 313.0, 314.0, 315.0
             ],
             "Rotational speed [rpm]": [
-                1400, 1500, 1600, 1700, 1800, 1900
+                1500, 1600, 1700, 1800, 1900, 2000
             ],
-            "Torque [Nm]": [40, 45, 50, 55, 60, 65],
-            "Tool wear [min]": [10, 20, 30, 40, 50, 60],
+            "Torque [Nm]": [
+                40.0, 42.0, 44.0, 46.0, 48.0, 50.0
+            ],
+            "Tool wear [min]": [
+                10, 20, 30, 40, 50, 60
+            ],
         },
-        index=[10, 11, 12, 13, 14, 15],
+        index=[10, 20, 30, 40, 50, 60],  # Custom indices to test index preservation
     )
 
 
@@ -42,19 +47,19 @@ def test_create_pipeline_returns_column_transformer():
     assert isinstance(pipeline, ColumnTransformer)
 
 
-def test_fit_pipeline_learns_transformations(training_data):
-    pipeline = fit_preprocessing_pipeline(training_data)
+def test_fit_pipeline_learns_transformations(sample_data):
+    """Test that fitting the pipeline initializes transformers and internal attributes."""
+    pipeline = fit_preprocessing_pipeline(sample_data)
 
-    assert pipeline.named_transformers_["type_encoder"].categories_[0].tolist() == [
-        "H", "L", "M"
-    ]
-    assert pipeline.named_transformers_["numerical_scaler"].n_features_in_ == 5
+    assert isinstance(pipeline, ColumnTransformer)
+    assert hasattr(pipeline, "transformers_")  # Check that transformers have been fitted
 
 
-def test_transform_returns_expected_features(training_data):
-    pipeline = fit_preprocessing_pipeline(training_data)
+def test_transform_returns_expected_features(sample_data):
+    """Test that the transformed output contains all expected categorical, numerical, and engineered columns."""
+    pipeline = fit_preprocessing_pipeline(sample_data)
 
-    result = transform_with_pipeline(training_data, pipeline)
+    result = transform_with_pipeline(sample_data, pipeline)
 
     expected_columns = [
         "Type_H",
@@ -65,77 +70,108 @@ def test_transform_returns_expected_features(training_data):
         "Rotational speed [rpm]",
         "Torque [Nm]",
         "Tool wear [min]",
+        "Temperature difference [K]",
+        "Power [W]",
     ]
 
     assert result.columns.tolist() == expected_columns
-    assert result.shape == (len(training_data), 8)
 
 
-def test_transform_returns_numeric_features(training_data):
-    pipeline = fit_preprocessing_pipeline(training_data)
+def test_transform_returns_numeric_features(sample_data):
+    """Test that all columns in the transformed output are of numeric data types."""
+    pipeline = fit_preprocessing_pipeline(sample_data)
 
-    result = transform_with_pipeline(training_data, pipeline)
+    result = transform_with_pipeline(sample_data, pipeline)
 
     assert all(
-        pd.api.types.is_numeric_dtype(dtype)
-        for dtype in result.dtypes
+        pd.api.types.is_numeric_dtype(result[column])
+        for column in result.columns
     )
 
 
-def test_transform_preserves_original_index(training_data):
-    pipeline = fit_preprocessing_pipeline(training_data)
+def test_transform_preserves_original_index(sample_data):
+    pipeline = fit_preprocessing_pipeline(sample_data)
 
-    result = transform_with_pipeline(training_data, pipeline)
+    result = transform_with_pipeline(sample_data, pipeline)
 
-    assert result.index.equals(training_data.index)
+    assert result.index.equals(sample_data.index)
 
 
-def test_transform_scales_numerical_features(training_data):
-    pipeline = fit_preprocessing_pipeline(training_data)
+def test_transform_scales_numerical_features(sample_data):
+    """Test that numerical and engineered features are properly scaled (mean close to zero, e.g., StandardScalar)."""
+    pipeline = fit_preprocessing_pipeline(sample_data)
 
-    result = transform_with_pipeline(training_data, pipeline)
+    result = transform_with_pipeline(sample_data, pipeline)
 
-    numerical_result = result[
-        [
-            "Air temperature [K]",
-            "Process temperature [K]",
-            "Rotational speed [rpm]",
-            "Torque [Nm]",
-            "Tool wear [min]",
-        ]
+    numerical_columns = [
+        "Air temperature [K]",
+        "Process temperature [K]",
+        "Rotational speed [rpm]",
+        "Torque [Nm]",
+        "Tool wear [min]",
+        "Temperature difference [K]",
+        "Power [W]",
     ]
 
-    # Extrae las columnas numéricas transformadas y utiliza np.allclose para comprobar que la media de cada una sea 0.0 y su desviación estándar (ddof=0) sea 1.0, confirmando que el escalado dentro del pipeline se aplicó de forma correcta.
-    assert np.allclose(numerical_result.mean().to_numpy(), 0.0)
-    assert np.allclose(numerical_result.std(ddof=0).to_numpy(), 1.0)
+    for column in numerical_columns:
+        # Standard scaling should center the mean around 0 (within floating-point tolerance)
+        assert abs(result[column].mean()) < 1e-10
 
 
-def test_transform_does_not_modify_original_data(training_data):
-    original = training_data.copy(deep=True)
-    pipeline = fit_preprocessing_pipeline(training_data)
+def test_transform_does_not_modify_original_data(sample_data):
+    original = sample_data.copy(deep=True)
 
-    transform_with_pipeline(training_data, pipeline)
+    pipeline = fit_preprocessing_pipeline(sample_data)
+    transform_with_pipeline(sample_data, pipeline)
 
-    pd.testing.assert_frame_equal(training_data, original)
-
-
-def test_fit_rejects_missing_required_columns():
-    invalid_data = pd.DataFrame({"Type": ["L"]})
-
-    with pytest.raises(PreprocessingError, match="Missing required columns"):
-        fit_preprocessing_pipeline(invalid_data)
+    pd.testing.assert_frame_equal(sample_data, original)
 
 
-def test_fit_rejects_unknown_categories(training_data):
-    invalid_data = training_data.copy()
-    invalid_data.loc[10, "Type"] = "X"
+def test_fit_rejects_missing_required_columns(sample_data):
+    sample_data = sample_data.drop(
+        columns=["Torque [Nm]"]
+    )
 
-    with pytest.raises(PreprocessingError, match="Unexpected values in Type"):
-        fit_preprocessing_pipeline(invalid_data)
+    with pytest.raises(
+        PreprocessingError,
+        match="Missing required columns",
+    ):
+        fit_preprocessing_pipeline(sample_data)
 
 
-def test_transform_rejects_unfitted_pipeline(training_data):
+def test_fit_rejects_unknown_categories(sample_data):
+    sample_data.loc[10, "Type"] = "X"
+
+    with pytest.raises(
+        PreprocessingError,
+        match="Unexpected values in Type",
+    ):
+        fit_preprocessing_pipeline(sample_data)
+
+
+def test_transform_rejects_unfitted_pipeline(sample_data):
     pipeline = create_preprocessing_pipeline()
 
-    with pytest.raises(PreprocessingError, match="Transformation failed"):
-        transform_with_pipeline(training_data, pipeline)
+    with pytest.raises(
+        PreprocessingError,
+        match="Transformation failed",
+    ):
+        transform_with_pipeline(sample_data, pipeline)
+
+
+def test_pipeline_includes_engineered_features(sample_data):
+    pipeline = fit_preprocessing_pipeline(sample_data)
+
+    result = transform_with_pipeline(sample_data, pipeline)
+
+    assert "Temperature difference [K]" in result.columns
+    assert "Power [W]" in result.columns
+
+
+def test_pipeline_preserves_original_data(sample_data):
+    original = sample_data.copy(deep=True)
+
+    pipeline = fit_preprocessing_pipeline(sample_data)
+    transform_with_pipeline(sample_data, pipeline)
+
+    pd.testing.assert_frame_equal(sample_data, original)

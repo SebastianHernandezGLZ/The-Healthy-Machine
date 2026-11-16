@@ -3,21 +3,34 @@
 
 import numpy as np
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.exceptions import NotFittedError
+
+from sklearn.compose import ColumnTransformer  # Import ColumnTransformer to apply different transformers to columns
+from sklearn.exceptions import NotFittedError  # Exception raised if a scikit-learn model/pipeline isn't fitted
 
 from src.preprocessing.encoder import (
     CATEGORICAL_COLUMNS,
     TYPE_CATEGORIES,
     create_encoder,
 )
+
 from src.preprocessing.scaler import (
-    NUMERICAL_COLUMNS,
     create_scaler,
+    NUMERICAL_COLUMNS,
+)
+
+from src.preprocessing.feature_engineering import (
+    ENGINEERED_COLUMNS,
+    engineer_features,
 )
 
 
-REQUIRED_COLUMNS = CATEGORICAL_COLUMNS + NUMERICAL_COLUMNS
+# Original input columns.
+INPUT_COLUMNS = CATEGORICAL_COLUMNS + NUMERICAL_COLUMNS
+
+# Original numerical columns plus engineered features.
+PIPELINE_NUMERICAL_COLUMNS = (
+    NUMERICAL_COLUMNS + ENGINEERED_COLUMNS
+)
 
 
 class PreprocessingError(ValueError):
@@ -29,7 +42,8 @@ def _validate_input(
     *,
     validate_categories: bool = False,
 ) -> None:
-    """Validate input features before preprocessing."""
+    """Validate original input features before preprocessing."""
+
     if not isinstance(X, pd.DataFrame):
         raise PreprocessingError(
             "Input must be a pandas DataFrame."
@@ -42,7 +56,7 @@ def _validate_input(
 
     missing_columns = [
         column
-        for column in REQUIRED_COLUMNS
+        for column in INPUT_COLUMNS
         if column not in X.columns
     ]
 
@@ -51,7 +65,8 @@ def _validate_input(
             f"Missing required columns: {missing_columns}"
         )
 
-    if X[REQUIRED_COLUMNS].isnull().any().any():
+    # Ensure no null/missing values exist in the required input feature columns
+    if X[INPUT_COLUMNS].isnull().any().any():
         raise PreprocessingError(
             "Required feature columns must not contain missing values."
         )
@@ -67,8 +82,11 @@ def _validate_input(
             f"Expected numerical columns: {non_numeric_columns}"
         )
 
+    # Try casting numerical features to a float numpy array to detect conversion errors
     try:
-        numerical_values = X[NUMERICAL_COLUMNS].to_numpy(dtype=float)
+        numerical_values = X[NUMERICAL_COLUMNS].to_numpy(
+            dtype=float
+        )
     except (TypeError, ValueError) as exc:
         raise PreprocessingError(
             "Numerical features must contain valid numbers."
@@ -79,9 +97,13 @@ def _validate_input(
             "Numerical features must not contain infinite values."
         )
 
+    # Optionally validate categorical columns against expected domain categories
     if validate_categories:
         observed_categories = set(X["Type"].unique())
-        invalid_categories = observed_categories - set(TYPE_CATEGORIES)
+
+        invalid_categories = (
+            observed_categories - set(TYPE_CATEGORIES)
+        )
 
         if invalid_categories:
             raise PreprocessingError(
@@ -91,23 +113,23 @@ def _validate_input(
 
 def create_preprocessing_pipeline() -> ColumnTransformer:
     """Create a transformer for categorical and numerical features."""
+
+    # Return a ColumnTransformer combining the encoder for categories and scaler for numerical/engineered features
     return ColumnTransformer(
         transformers=[
             (
-                # "type_encoder": Aplica el codificador one-hot sobre las columnas categóricas.
                 "type_encoder",
                 create_encoder(),
                 CATEGORICAL_COLUMNS,
             ),
             (
-                # "numerical_scaler": Aplica el escalador estándar sobre las columnas numéricas.
                 "numerical_scaler",
                 create_scaler(),
-                NUMERICAL_COLUMNS,
+                PIPELINE_NUMERICAL_COLUMNS,
             ),
         ],
-        remainder="drop",
-        verbose_feature_names_out=False,
+        remainder="drop",  # Drop any columns not explicitly specified in transformers
+        verbose_feature_names_out=False,  # Keep clean feature names without transformer prefix
     )
 
 
@@ -115,12 +137,22 @@ def fit_preprocessing_pipeline(
     X_train: pd.DataFrame,
 ) -> ColumnTransformer:
     """Fit preprocessing transformations using training data only."""
-    _validate_input(X_train, validate_categories=True)
+
+    # Validate training inputs and enforce strict category validation
+    _validate_input(
+        X_train,
+        validate_categories=True,
+    )
+
+    # Generate additional features from the original training data.
+    engineered_X_train = engineer_features(X_train)
 
     pipeline = create_preprocessing_pipeline()
 
+    # Fit the pipeline transformer on the expanded training dataset
     try:
-        pipeline.fit(X_train)
+        pipeline.fit(engineered_X_train)
+
     except (ValueError, TypeError) as exc:
         raise PreprocessingError(
             "Failed to fit the preprocessing pipeline."
@@ -133,7 +165,9 @@ def transform_with_pipeline(
     X: pd.DataFrame,
     pipeline: ColumnTransformer,
 ) -> pd.DataFrame:
-    """Transform features and preserve column names and row indices."""
+    """Transform features while preserving column names and indices."""
+
+    # Validate input features
     _validate_input(X)
 
     if not isinstance(pipeline, ColumnTransformer):
@@ -141,14 +175,26 @@ def transform_with_pipeline(
             "pipeline must be a fitted ColumnTransformer."
         )
 
+    # Generate the same additional features used during training.
+    engineered_X = engineer_features(X)
+
+    # Transform input data and retrieve output feature names
     try:
-        transformed_values = pipeline.transform(X)
+        transformed_values = pipeline.transform(engineered_X)
+
         feature_names = pipeline.get_feature_names_out()
-    except (ValueError, TypeError, NotFittedError, AttributeError) as exc:
+
+    except (
+        ValueError,
+        TypeError,
+        NotFittedError,
+        AttributeError,
+    ) as exc:
         raise PreprocessingError(
             "Transformation failed. Ensure the pipeline has been fitted."
         ) from exc
 
+    # Return the processed values wrapped in a pandas DataFrame preserving index and column names
     return pd.DataFrame(
         transformed_values,
         columns=feature_names,
